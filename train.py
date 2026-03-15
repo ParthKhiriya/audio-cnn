@@ -1,12 +1,12 @@
 from pathlib import Path
 import sys
 import pandas as pd
-import torchaudio
-import torch
 import numpy as np
 
 import modal
+import torch
 from torch.utils.data import Dataset, DataLoader
+import torchaudio
 import torch.nn as nn
 import torchaudio.transforms as T
 import torch.optim as optim
@@ -25,26 +25,26 @@ image = (modal.Image.debian_slim()
              "cd /tmp && wget https://github.com/karolpiczak/ESC-50/archive/master.zip -O esc50.zip",
              "cd /tmp && unzip esc50.zip",
              "mkdir -p /opt/esc50-data",
-             "cp -r /tmp/ESC-50-master/* /opt/esc50-data",
+             "cp -r /tmp/ESC-50-master/* /opt/esc50-data/",
              "rm -rf /tmp/esc50.zip /tmp/ESC-50-master"
          ])
          .add_local_python_source("model"))
 
 volume = modal.Volume.from_name("esc50-data", create_if_missing=True)
-model_volume = modal.Volume.from_name("esc-model", create_if_missing=True)\
+model_volume = modal.Volume.from_name("esc-model", create_if_missing=True)
 
 
 class ESC50Dataset(Dataset):
-    def __init__ (self, data_dir, metadata_file, split="train", transform=None):
+    def __init__(self, data_dir, metadata_file, split="train", transform=None):
         super().__init__()
         self.data_dir = Path(data_dir)
         self.metadata = pd.read_csv(metadata_file)
         self.split = split
-        self.transform = transform 
+        self.transform = transform
 
         if split == 'train':
             self.metadata = self.metadata[self.metadata['fold'] != 5]
-        else: 
+        else:
             self.metadata = self.metadata[self.metadata['fold'] == 5]
 
         self.classes = sorted(self.metadata['category'].unique())
@@ -52,21 +52,21 @@ class ESC50Dataset(Dataset):
         self.metadata['label'] = self.metadata['category'].map(
             self.class_to_idx)
 
-    def __len__ (self):
+    def __len__(self):
         return len(self.metadata)
-    
+
     def __getitem__(self, idx):
         row = self.metadata.iloc[idx]
-        audio_path = self.data_dir / "audio" / row['filename'] # data_dir/audio/2-101676-A-10.wav
+        audio_path = self.data_dir / "audio" / row['filename']
 
         waveform, sample_rate = torchaudio.load(audio_path)
-        
+
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
 
         if self.transform:
             spectrogram = self.transform(waveform)
-        else: 
+        else:
             spectrogram = waveform
 
         return spectrogram, row['label']
@@ -87,7 +87,7 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam):
     return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
 
-@app.function(image=image, gpu="A10G", volumes={"/data": volume, "/models": model_volume}, timeout=60*60*3)
+@app.function(image=image, gpu="A10G", volumes={"/data": volume, "/models": model_volume}, timeout=60 * 60 * 3)
 def train():
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -98,7 +98,7 @@ def train():
 
     train_transform = nn.Sequential(
         T.MelSpectrogram(
-            sample_rate=22050,
+            sample_rate=44100,
             n_fft=1024,
             hop_length=512,
             n_mels=128,
@@ -112,7 +112,7 @@ def train():
 
     val_transform = nn.Sequential(
         T.MelSpectrogram(
-            sample_rate=22050,
+            sample_rate=44100,
             n_fft=1024,
             hop_length=512,
             n_mels=128,
@@ -124,18 +124,18 @@ def train():
 
     train_dataset = ESC50Dataset(
         data_dir=esc50_dir, metadata_file=esc50_dir / "meta" / "esc50.csv", split="train", transform=train_transform)
-    
+
     val_dataset = ESC50Dataset(
         data_dir=esc50_dir, metadata_file=esc50_dir / "meta" / "esc50.csv", split="test", transform=val_transform)
-    
-    print(f"Training Samples: {len(train_dataset)}")
-    print(f"Val Samples: {len(val_dataset)}")
+
+    print(f"Training samples: {len(train_dataset)}")
+    print(f"Val samples: {len(val_dataset)}")
 
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     test_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = AudioCNN(num_classes=len(train_dataset))
+    model = AudioCNN(num_classes=len(train_dataset.classes))
     model.to(device)
 
     num_epochs = 100
@@ -177,7 +177,7 @@ def train():
             scheduler.step()
 
             epoch_loss += loss.item()
-            progress_bar.set_postfix({'Loss': f'{loss.item():.4}'})
+            progress_bar.set_postfix({'Loss': f'{loss.item():.4f}'})
 
         avg_epoch_loss = epoch_loss / len(train_dataloader)
         writer.add_scalar('Loss/Train', avg_epoch_loss, epoch)
@@ -207,14 +207,14 @@ def train():
 
         writer.add_scalar('Loss/Validation', avg_val_loss, epoch)
         writer.add_scalar('Accuracy/Validation', accuracy, epoch)
-        
+
         print(
             f'Epoch {epoch+1} Loss: {avg_epoch_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Accuracy: {accuracy:.2f}%')
-        
+
         if accuracy > best_accuracy:
-            best_accuracy = accuracy 
+            best_accuracy = accuracy
             torch.save({
-                'model_state_dict': model.state_dict(), 
+                'model_state_dict': model.state_dict(),
                 'accuracy': accuracy,
                 'epoch': epoch,
                 'classes': train_dataset.classes
@@ -222,7 +222,7 @@ def train():
             print(f'New best model saved: {accuracy:.2f}%')
 
     writer.close()
-    print(f'Training completed! Best Accuracy: {best_accuracy:.2f}%')
+    print(f'Training completed! Best accuracy: {best_accuracy:.2f}%')
 
 
 @app.local_entrypoint()
